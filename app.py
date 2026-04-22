@@ -2,160 +2,121 @@ import streamlit as st
 import fitz  # PyMuPDF
 import os
 import tempfile
-import re
 from openai import OpenAI
-from concurrent.futures import ProcessPoolExecutor
 from reportlab.pdfgen import canvas
 from io import BytesIO
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Sci-Translate Pro", page_icon="🧪", layout="wide")
+st.set_page_config(page_title="Sci-Translate Fix", page_icon="🧪", layout="wide")
 
-# --- LOGIQUE DE PROTECTION DES FORMULES ---
-def protect_content(text):
-    vault = {}
-    # Pattern pour LaTeX ($...$), formules chimiques et constantes
-    pattern = r'(\$\$.*?\$\$|\$.*?\$|\b([A-Z][a-z]?\d+([A-Z][a-z]?\d*)*)\b)'
-    def replace(m):
-        tag = f"[[SCI_{len(vault)}]]"
-        vault[tag] = m.group(0)
-        return tag
-    return re.sub(pattern, replace, text), vault
-
-def restore_content(text, vault):
-    for tag, val in vault.items():
-        text = text.replace(tag, val)
-    return text
-
-# --- MOTEUR DE TRADUCTION (ANGLAIS -> FRANÇAIS) ---
+# --- MOTEUR DE TRADUCTION SIMPLIFIÉ ---
 def translate_engine(text, discipline):
     try:
+        # Récupération sécurisée du Token
         token = st.secrets["GH_TOKEN"]
         client = OpenAI(
             base_url="https://models.inference.ai.azure.com",
             api_key=token,
         )
         
-        masked_text, vault = protect_content(text)
-        
-        # Instructions strictes pour forcer la traduction en Français
+        # Envoi du texte brut pour éviter toute confusion de l'IA
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {
                     "role": "system", 
-                    "content": (
-                        f"Tu es un traducteur expert en {discipline}. "
-                        "Ta mission est de traduire le texte de l'ANGLAIS vers le FRANÇAIS uniquement. "
-                        "Garde un ton académique et professionnel. "
-                        "CONSIGNE CRITIQUE : Ne modifie jamais les balises [[SCI_X]]. "
-                        "Ne renvoie que la traduction, sans commentaires."
-                    )
+                    "content": f"Tu es un traducteur expert. Traduis le texte suivant de l'ANGLAIS vers le FRANÇAIS. Domaine : {discipline}. "
+                               "Garde les termes techniques corrects. Ne réponds QUE par la traduction française."
                 },
-                {"role": "user", "content": f"Translate this scientific text into French: {masked_text}"}
+                {"role": "user", "content": text}
             ],
-            temperature=0.2 # Précision maximale
+            temperature=0.1 # Très bas pour éviter les erreurs
         )
-        translated = response.choices[0].message.content
-        return restore_content(translated, vault)
+        return response.choices[0].message.content
     except Exception as e:
-        return text 
+        return f"[Erreur de traduction : {str(e)}]"
 
-# --- RECONSTRUCTION DU CALQUE PDF ---
+# --- CRÉATION DU CALQUE FRANÇAIS ---
 def create_overlay(text, rect):
     packet = BytesIO()
     can = canvas.Canvas(packet, pagesize=(rect.width, rect.height))
-    # Police légèrement plus petite (9) car le français est plus long que l'anglais
-    can.setFont("Helvetica", 9) 
-    to = can.beginText(50, rect.height - 50)
+    can.setFont("Helvetica", 9)
+    to = can.beginText(40, rect.height - 50)
     
-    # Découpage basique des lignes pour le calque
-    for line in text.split('\n')[:50]:
-        to.textLine(line[:100])
+    # Gestion simple du texte pour le calque
+    lines = text.split('\n')
+    for line in lines:
+        # On coupe les lignes trop longues pour qu'elles restent dans la page
+        clean_line = line.strip()
+        if len(clean_line) > 0:
+            to.textLine(clean_line[:95])
+            if len(clean_line) > 95:
+                to.textLine(clean_line[95:190])
+    
     can.drawText(to)
     can.save()
     packet.seek(0)
     return packet
 
-# --- TRAITEMENT PARALLÈLE ---
-def process_page_range(pdf_path, start, end, discipline):
-    doc = fitz.open(pdf_path)
-    results = []
-    for i in range(start, end):
-        if i >= len(doc): break
-        page = doc[i]
-        raw_text = page.get_text().strip()
-        
-        # Filtre de sécurité (pages vides ou schémas sans texte)
-        if len(raw_text) < 15 or not any(c.isalpha() for c in raw_text):
-            results.append((i, raw_text))
-        else:
-            results.append((i, translate_engine(raw_text, discipline)))
-    return results
-
-# --- INTERFACE UTILISATEUR ---
+# --- INTERFACE PRINCIPALE ---
 def main():
-    st.title("🔬 Sci-Translate Pro")
-    st.subheader("Traduction spécialisée Anglais ➡️ Français")
+    st.title("🔬 Sci-Translate : Version Corrective")
+    st.info("Cette version traite les pages une par une pour garantir la traduction en Français.")
 
-    discipline = st.sidebar.selectbox("Domaine Scientifique", ["Physique", "Chimie", "Mathématiques", "Biologie"])
-    file = st.file_uploader("Téléverser votre PDF original (Anglais)", type="pdf")
+    discipline = st.sidebar.selectbox("Domaine", ["Physique", "Chimie", "Biologie", "Mathématiques"])
+    file = st.file_uploader("Choisir le fichier PDF Anglais", type="pdf")
 
     if file:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_path = os.path.join(tmp_dir, "input.pdf")
-            with open(tmp_path, "wb") as f:
-                f.write(file.getbuffer())
-            
-            doc_orig = fitz.open(tmp_path)
-            num_pages = len(doc_orig)
-
-            if st.button(f"Traduire les {num_pages} pages en Français"):
-                prog = st.progress(0)
-                status = st.empty()
+        if st.button("Lancer la traduction intégrale"):
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                input_path = os.path.join(tmp_dir, "input.pdf")
+                with open(input_path, "wb") as f:
+                    f.write(file.getbuffer())
                 
-                # Phase 1 : Traduction
-                all_texts = []
-                chunk_size = 4 # Réduit pour éviter les limites de débit (Rate Limits)
-                ranges = [(tmp_path, i, i+chunk_size, discipline) for i in range(0, num_pages, chunk_size)]
-                
-                with ProcessPoolExecutor() as ex:
-                    futures = [ex.submit(process_page_range, *r) for r in ranges]
-                    for idx, f in enumerate(futures):
-                        all_texts.extend(f.result())
-                        prog.progress(int((idx+1)/len(futures) * 70))
-                        status.text(f"Traduction en cours... {len(all_texts)}/{num_pages}")
-
-                all_texts.sort()
-
-                # Phase 2 : Reconstruction
-                status.text("Reconstruction du PDF traduit...")
+                doc_orig = fitz.open(input_path)
                 out_pdf = fitz.open()
+                num_pages = len(doc_orig)
                 
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+
+                # Traitement séquentiel (plus fiable pour les clés gratuites)
                 for i in range(num_pages):
+                    status_text.text(f"Traduction de la page {i+1} sur {num_pages}...")
                     page = doc_orig[i]
                     
-                    # On efface le texte anglais proprement
-                    try:
-                        for b in page.get_text("blocks"):
-                            page.add_redact_annotation(b[:4], fill=(1,1,1))
-                        page.apply_redactions()
-                    except:
-                        pass
+                    # 1. Extraction du texte
+                    text_to_translate = page.get_text().strip()
                     
-                    # On pose le calque français
-                    translated_content = all_texts[i][1]
-                    overlay_pdf = fitz.open("pdf", create_overlay(translated_content, page.rect))
-                    page.show_pdf_page(page.rect, overlay_pdf, 0)
+                    if len(text_to_translate) > 20:
+                        # 2. Appel IA
+                        translated_text = translate_engine(text_to_translate, discipline)
+                    else:
+                        translated_text = text_to_translate
+                    
+                    # 3. Effacement du texte original (Rectangle blanc)
+                    for block in page.get_text("blocks"):
+                        page.add_redact_annotation(block[:4], fill=(1, 1, 1))
+                    page.apply_redactions()
+                    
+                    # 4. Ajout du texte français
+                    overlay_pdf_bytes = create_overlay(translated_text, page.rect)
+                    overlay_doc = fitz.open("pdf", overlay_pdf_bytes)
+                    page.show_pdf_page(page.rect, overlay_doc, 0)
+                    
+                    # 5. Insertion dans le document final
                     out_pdf.insert_pdf(doc_orig, from_page=i, to_page=i)
+                    
+                    progress_bar.progress((i + 1) / num_pages)
+
+                status_text.success("C'est fini ! Votre livre est prêt en français.")
                 
-                prog.progress(100)
-                status.success("Traduction terminée !")
-                
+                # Téléchargement
+                final_bytes = out_pdf.tobytes(garbage=4, deflate=True)
                 st.download_button(
-                    label="📥 Télécharger le livre en Français",
-                    data=out_pdf.tobytes(garbage=4, deflate=True),
-                    file_name=f"Livre_{discipline}_FR.pdf",
+                    label="📥 Télécharger le PDF en Français",
+                    data=final_bytes,
+                    file_name="Livre_Traduit_FR.pdf",
                     mime="application/pdf"
                 )
 
