@@ -9,12 +9,11 @@ from reportlab.pdfgen import canvas
 from io import BytesIO
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Sci-Translate Final", page_icon="🧪", layout="wide")
+st.set_page_config(page_title="Sci-Translate Final Fix", page_icon="🧪", layout="wide")
 
 def translate_engine(text, engine_choice, discipline):
-    """Moteur de traduction avec gestion d'erreurs et choix d'IA"""
     try:
-        if engine_choice == "Groq (Llama 3.1 - Ultra Rapide)":
+        if "Groq" in engine_choice:
             client = Groq(api_key=st.secrets["GROQ_API_KEY"])
             model_name = "llama-3.1-70b-versatile"
         else:
@@ -24,7 +23,7 @@ def translate_engine(text, engine_choice, discipline):
         response = client.chat.completions.create(
             model=model_name,
             messages=[
-                {"role": "system", "content": f"Tu es un traducteur expert en {discipline}. Traduis ce texte de l'anglais vers le français. Ne renvoie que la traduction française brute."},
+                {"role": "system", "content": f"Tu es un traducteur expert en {discipline}. Traduis en français. Ne renvoie que la traduction."},
                 {"role": "user", "content": text}
             ],
             temperature=0.2
@@ -34,16 +33,15 @@ def translate_engine(text, engine_choice, discipline):
         return f"Erreur d'API : {str(e)}"
 
 def create_overlay(text, rect):
-    """Crée un calque PDF avec le texte traduit"""
     packet = BytesIO()
     can = canvas.Canvas(packet, pagesize=(rect.width, rect.height))
     can.setFont("Helvetica", 10)
-    to = can.beginText(40, rect.height - 50)
+    to = can.beginText(45, rect.height - 50)
     
     for line in text.split('\n'):
         if line.strip():
-            # Limitation simple de largeur de ligne
-            to.textLine(line[:85])
+            # Découpage rudimentaire pour la largeur
+            to.textLine(line[:90])
     
     can.drawText(to)
     can.save()
@@ -53,7 +51,6 @@ def create_overlay(text, rect):
 def main():
     st.title("🔬 Traducteur Scientifique Final")
     
-    # Barre latérale
     engine = st.sidebar.radio("Moteur d'IA", ["Groq (Llama 3.1 - Ultra Rapide)", "OpenAI (GPT-4o)"])
     discipline = st.sidebar.selectbox("Domaine", ["Mécanique des Fluides", "Physique", "Chimie"])
     
@@ -76,18 +73,23 @@ def main():
                 page = doc_orig[i]
                 eng_text = page.get_text().strip()
                 
-                if len(eng_text) > 15:
+                if len(eng_text) > 10:
                     # 1. Traduction
                     fr_text = translate_engine(eng_text, engine, discipline)
                     
-                    # 2. Effacement sécurisé (Correction de l'erreur SharedScreenshot_7.jpg)
-                    for block in page.get_text("blocks"):
-                        r = fitz.Rect(block[:4])
-                        if r.is_valid and not r.is_empty:
-                            page.add_redact_annotation(r, fill=(1,1,1))
-                    page.apply_redactions()
+                    # 2. Nettoyage Sécurisé (Correction SharedScreenshot_7.jpg)
+                    try:
+                        blocks = page.get_text("blocks")
+                        for b in blocks:
+                            # Création explicite d'un objet Rect à partir des 4 premières coordonnées
+                            r = fitz.Rect(b[0], b[1], b[2], b[3])
+                            if not r.is_empty:
+                                page.add_redact_annotation(r, fill=(1,1,1))
+                        page.apply_redactions()
+                    except Exception as e:
+                        st.warning(f"Note : Nettoyage partiel sur page {i+1}")
 
-                    # 3. Superposition du français
+                    # 3. Superposition
                     overlay_bytes = create_overlay(fr_text, page.rect)
                     overlay_doc = fitz.open("pdf", overlay_bytes)
                     page.show_pdf_page(page.rect, overlay_doc, 0)
@@ -96,10 +98,10 @@ def main():
                 progress_bar.progress((i + 1) / len(doc_orig))
                 
                 if "Groq" in engine:
-                    time.sleep(0.4) # Protection contre le Rate Limit gratuit
+                    time.sleep(0.5) # Évite le blocage du plan gratuit Groq
 
-            status.success("Traduction terminée !")
-            st.download_button("📥 Télécharger le PDF Français", out_pdf.tobytes(), "Traduction_Finale.pdf")
+            status.success("🎉 Traduction terminée !")
+            st.download_button("📥 Télécharger le PDF Français", out_pdf.tobytes(), "Livre_Traduit_Final.pdf")
 
 if __name__ == "__main__":
     main()
