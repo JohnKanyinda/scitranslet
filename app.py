@@ -9,13 +9,14 @@ from reportlab.pdfgen import canvas
 from io import BytesIO
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Sci-Translate Final Fix", page_icon="🧪", layout="wide")
+st.set_page_config(page_title="Sci-Translate Stable", page_icon="🚀", layout="wide")
 
 def translate_engine(text, engine_choice, discipline):
     try:
         if "Groq" in engine_choice:
             client = Groq(api_key=st.secrets["GROQ_API_KEY"])
-            model_name = "llama-3.1-70b-versatile"
+            # Passage au modèle 8b pour éviter l'erreur 400 de saturation
+            model_name = "llama-3.1-8b-instant"
         else:
             client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
             model_name = "gpt-4o-mini"
@@ -23,10 +24,10 @@ def translate_engine(text, engine_choice, discipline):
         response = client.chat.completions.create(
             model=model_name,
             messages=[
-                {"role": "system", "content": f"Tu es un traducteur expert en {discipline}. Traduis en français. Ne renvoie que la traduction."},
+                {"role": "system", "content": f"Tu es un traducteur expert en {discipline}. Traduis en français. Ne renvoie QUE la traduction."},
                 {"role": "user", "content": text}
             ],
-            temperature=0.2
+            temperature=0.1 # Plus bas pour plus de fidélité technique
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -35,13 +36,14 @@ def translate_engine(text, engine_choice, discipline):
 def create_overlay(text, rect):
     packet = BytesIO()
     can = canvas.Canvas(packet, pagesize=(rect.width, rect.height))
-    can.setFont("Helvetica", 10)
-    to = can.beginText(45, rect.height - 50)
+    can.setFont("Helvetica", 9)
+    to = can.beginText(50, rect.height - 50)
     
-    for line in text.split('\n'):
+    # Gestion simple du retour à la ligne
+    lines = text.split('\n')
+    for line in lines:
         if line.strip():
-            # Découpage rudimentaire pour la largeur
-            to.textLine(line[:90])
+            to.textLine(line[:95])
     
     can.drawText(to)
     can.save()
@@ -49,14 +51,14 @@ def create_overlay(text, rect):
     return packet
 
 def main():
-    st.title("🔬 Traducteur Scientifique Final")
+    st.title("🔬 Traducteur Scientifique (Version Stable)")
     
-    engine = st.sidebar.radio("Moteur d'IA", ["Groq (Llama 3.1 - Ultra Rapide)", "OpenAI (GPT-4o)"])
+    engine = st.sidebar.radio("Moteur d'IA", ["Groq (Llama 8B - Rapide)", "OpenAI (GPT-4o)"])
     discipline = st.sidebar.selectbox("Domaine", ["Mécanique des Fluides", "Physique", "Chimie"])
     
-    uploaded_file = st.file_uploader("Charger le PDF (Anglais)", type="pdf")
+    uploaded_file = st.file_uploader("Charger le PDF original", type="pdf")
 
-    if uploaded_file and st.button("Lancer la traduction"):
+    if uploaded_file and st.button("Traduire le document"):
         with tempfile.TemporaryDirectory() as tmp_dir:
             input_path = os.path.join(tmp_dir, "input.pdf")
             with open(input_path, "wb") as f:
@@ -69,27 +71,25 @@ def main():
             status = st.empty()
 
             for i in range(len(doc_orig)):
-                status.text(f"Traduction de la page {i+1} / {len(doc_orig)}...")
+                status.text(f"Traitement page {i+1} sur {len(doc_orig)}...")
                 page = doc_orig[i]
                 eng_text = page.get_text().strip()
                 
-                if len(eng_text) > 10:
-                    # 1. Traduction
+                # Traduire seulement si la page contient du texte significatif
+                if len(eng_text) > 20:
                     fr_text = translate_engine(eng_text, engine, discipline)
                     
-                    # 2. Nettoyage Sécurisé (Correction SharedScreenshot_7.jpg)
+                    # Nettoyage de l'anglais
                     try:
-                        blocks = page.get_text("blocks")
-                        for b in blocks:
-                            # Création explicite d'un objet Rect à partir des 4 premières coordonnées
-                            r = fitz.Rect(b[0], b[1], b[2], b[3])
-                            if not r.is_empty:
+                        for b in page.get_text("blocks"):
+                            r = fitz.Rect(b[:4])
+                            if r.is_valid:
                                 page.add_redact_annotation(r, fill=(1,1,1))
                         page.apply_redactions()
-                    except Exception as e:
-                        st.warning(f"Note : Nettoyage partiel sur page {i+1}")
+                    except:
+                        pass
 
-                    # 3. Superposition
+                    # Ajout du français
                     overlay_bytes = create_overlay(fr_text, page.rect)
                     overlay_doc = fitz.open("pdf", overlay_bytes)
                     page.show_pdf_page(page.rect, overlay_doc, 0)
@@ -97,11 +97,11 @@ def main():
                 out_pdf.insert_pdf(doc_orig, from_page=i, to_page=i)
                 progress_bar.progress((i + 1) / len(doc_orig))
                 
-                if "Groq" in engine:
-                    time.sleep(0.5) # Évite le blocage du plan gratuit Groq
+                # Pause obligatoire pour ne pas saturer l'API gratuite
+                time.sleep(1.5)
 
-            status.success("🎉 Traduction terminée !")
-            st.download_button("📥 Télécharger le PDF Français", out_pdf.tobytes(), "Livre_Traduit_Final.pdf")
+            status.success("✅ Document prêt !")
+            st.download_button("📥 Télécharger le résultat", out_pdf.tobytes(), "Traduction_Stable.pdf")
 
 if __name__ == "__main__":
     main()
